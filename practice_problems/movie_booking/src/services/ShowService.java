@@ -4,10 +4,11 @@ import enums.SeatType;
 import models.*;
 
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
-import java.time.Instant;
 import java.util.stream.Collectors;
 
 public class ShowService {
@@ -21,27 +22,36 @@ public class ShowService {
     // Per-show lock — prevents concurrent seat-state mutations for the same show
     private final Map<String, ReentrantLock> showLocks = new ConcurrentHashMap<>();
 
-    private int showSeatIdCounter = 1;
+    private final AtomicInteger showSeatIdCounter = new AtomicInteger(1);
 
-    // Seat price multipliers by type
     private static final Map<SeatType, Double> PRICE_MULTIPLIER = Map.of(
             SeatType.REGULAR, 1.0,
             SeatType.PREMIUM, 1.5,
             SeatType.VIP,     2.5
     );
 
+    private ShowService() {}
+
+    private static class Holder {
+        private static final ShowService INSTANCE = new ShowService();
+    }
+
+    public static ShowService getInstance() {
+        return Holder.INSTANCE;
+    }
+
     /**
      * Registers a show and auto-creates one ShowSeat per physical seat on the screen.
      * @param basePrice base ticket price (applied to REGULAR seats; others are scaled up)
      */
-    public Show addShow(Show show, double basePrice) {
+    public synchronized Show addShow(Show show, double basePrice) {
         shows.put(show.getId(), show);
         showLocks.put(show.getId(), new ReentrantLock());
 
         Map<String, ShowSeat> seatMap = new ConcurrentHashMap<>();
         for (Seat seat : show.getScreen().getSeats()) {
             double price = basePrice * PRICE_MULTIPLIER.getOrDefault(seat.getType(), 1.0);
-            String ssId = "SS" + (showSeatIdCounter++);
+            String ssId = "SS" + showSeatIdCounter.getAndIncrement();
             ShowSeat ss = new ShowSeat(ssId, show, seat, price);
             seatMap.put(ssId, ss);
         }
@@ -140,9 +150,7 @@ public class ShowService {
         ReentrantLock lock = getLock(showId);
         lock.lock();
         try {
-            for (ShowSeat ss : seats) {
-                ss.book();
-            }
+            for (ShowSeat ss : seats) ss.book();
         } finally {
             lock.unlock();
         }
@@ -153,9 +161,7 @@ public class ShowService {
         ReentrantLock lock = getLock(showId);
         lock.lock();
         try {
-            for (ShowSeat ss : seats) {
-                ss.release();
-            }
+            for (ShowSeat ss : seats) ss.release();
         } finally {
             lock.unlock();
         }

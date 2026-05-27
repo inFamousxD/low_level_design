@@ -9,14 +9,23 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class MovieService {
+
     private final Map<String, Movie> movies = new ConcurrentHashMap<>();
     private final ShowService showService;
 
-    public MovieService(ShowService showService) {
-        this.showService = showService;
+    private MovieService() {
+        this.showService = ShowService.getInstance();
     }
 
-    public Movie addMovie(Movie movie) {
+    private static class Holder {
+        private static final MovieService INSTANCE = new MovieService();
+    }
+
+    public static MovieService getInstance() {
+        return Holder.INSTANCE;
+    }
+
+    public synchronized Movie addMovie(Movie movie) {
         movies.put(movie.getId(), movie);
         return movie;
     }

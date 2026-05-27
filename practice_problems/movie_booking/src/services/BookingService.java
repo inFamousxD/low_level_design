@@ -19,8 +19,8 @@ public class BookingService {
     private static final Duration HOLD_TTL = Duration.ofMinutes(10);
 
     private final ShowService showService;
-    private final Map<String, SeatHold> holds    = new ConcurrentHashMap<>();
-    private final Map<String, Booking> bookings  = new ConcurrentHashMap<>();
+    private final Map<String, SeatHold> holds   = new ConcurrentHashMap<>();
+    private final Map<String, Booking>  bookings = new ConcurrentHashMap<>();
 
     // Background sweeper releases ShowSeats whose hold has expired
     private final ScheduledExecutorService sweeper =
@@ -30,9 +30,17 @@ public class BookingService {
                 return t;
             });
 
-    public BookingService(ShowService showService) {
-        this.showService = showService;
+    private BookingService() {
+        this.showService = ShowService.getInstance();
         sweeper.scheduleAtFixedRate(this::sweepExpiredHolds, 1, 1, TimeUnit.MINUTES);
+    }
+
+    private static class Holder {
+        private static final BookingService INSTANCE = new BookingService();
+    }
+
+    public static BookingService getInstance() {
+        return Holder.INSTANCE;
     }
 
     /**
@@ -46,6 +54,7 @@ public class BookingService {
         String holdId = "H-" + UUID.randomUUID();
         Instant expiresAt = Instant.now().plus(HOLD_TTL);
 
+        // ShowService acquires the per-show lock for atomic seat validation + hold
         List<ShowSeat> held = showService.holdSeats(showId, showSeatIds, holdId, expiresAt);
 
         SeatHold seatHold = new SeatHold(holdId, user, showService.getShow(showId), held, expiresAt);
@@ -55,30 +64,33 @@ public class BookingService {
 
     /**
      * Confirms a hold into a real booking and marks all seats as BOOKED.
+     * Synchronized on the hold object so that concurrent confirm / cancel / sweep
+     * calls for the same hold are serialized.
      *
-     * @throws IllegalStateException if the hold has expired or was already used/cancelled
+     * @throws IllegalStateException if the hold has expired or is no longer active
      */
     public Booking confirmBooking(String holdId) {
         SeatHold hold = getHold(holdId);
-
-        if (hold.isExpired() || hold.getStatus() != HoldStatus.ACTIVE) {
-            // If expired, also release the seats
-            if (hold.getStatus() == HoldStatus.ACTIVE) {
-                hold.setStatus(HoldStatus.EXPIRED);
-                showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
+        synchronized (hold) {
+            if (hold.isExpired() || hold.getStatus() != HoldStatus.ACTIVE) {
+                if (hold.getStatus() == HoldStatus.ACTIVE) {
+                    hold.setStatus(HoldStatus.EXPIRED);
+                    showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
+                }
+                throw new IllegalStateException(
+                        "Hold " + holdId + " is no longer active: " + hold.getStatus());
             }
-            throw new IllegalStateException("Hold " + holdId + " is no longer active: " + hold.getStatus());
+
+            showService.bookSeats(hold.getShow().getId(), hold.getSeats());
+            hold.setStatus(HoldStatus.CONFIRMED);
+
+            double total = hold.getSeats().stream().mapToDouble(ShowSeat::getPrice).sum();
+            String bookingId = "B-" + UUID.randomUUID();
+            Booking booking = new Booking(bookingId, hold.getUser(), hold.getShow(),
+                                           hold.getSeats(), total);
+            bookings.put(bookingId, booking);
+            return booking;
         }
-
-        showService.bookSeats(hold.getShow().getId(), hold.getSeats());
-        hold.setStatus(HoldStatus.CONFIRMED);
-
-        double total = hold.getSeats().stream().mapToDouble(ShowSeat::getPrice).sum();
-        String bookingId = "B-" + UUID.randomUUID();
-        Booking booking = new Booking(bookingId, hold.getUser(), hold.getShow(),
-                                       hold.getSeats(), total);
-        bookings.put(bookingId, booking);
-        return booking;
     }
 
     /**
@@ -86,11 +98,14 @@ public class BookingService {
      */
     public void cancelHold(String holdId) {
         SeatHold hold = getHold(holdId);
-        if (hold.getStatus() != HoldStatus.ACTIVE) {
-            throw new IllegalStateException("Hold " + holdId + " is not active: " + hold.getStatus());
+        synchronized (hold) {
+            if (hold.getStatus() != HoldStatus.ACTIVE) {
+                throw new IllegalStateException(
+                        "Hold " + holdId + " is not active: " + hold.getStatus());
+            }
+            hold.setStatus(HoldStatus.CANCELLED);
+            showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
         }
-        hold.setStatus(HoldStatus.CANCELLED);
-        showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
     }
 
     /**
@@ -98,11 +113,14 @@ public class BookingService {
      */
     public void cancelBooking(String bookingId) {
         Booking booking = getBooking(bookingId);
-        if (booking.getStatus() != BookingStatus.CONFIRMED) {
-            throw new IllegalStateException("Booking " + bookingId + " is not confirmed: " + booking.getStatus());
+        synchronized (booking) {
+            if (booking.getStatus() != BookingStatus.CONFIRMED) {
+                throw new IllegalStateException(
+                        "Booking " + bookingId + " is not confirmed: " + booking.getStatus());
+            }
+            booking.setStatus(BookingStatus.CANCELLED);
+            showService.releaseSeats(booking.getShow().getId(), booking.getSeats());
         }
-        booking.setStatus(BookingStatus.CANCELLED);
-        showService.releaseSeats(booking.getShow().getId(), booking.getSeats());
     }
 
     public SeatHold getHold(String holdId) {
@@ -120,9 +138,11 @@ public class BookingService {
     /** Periodic cleanup: release ShowSeats whose TTL has passed. */
     private void sweepExpiredHolds() {
         holds.values().forEach(hold -> {
-            if (hold.getStatus() == HoldStatus.ACTIVE && hold.isExpired()) {
-                hold.setStatus(HoldStatus.EXPIRED);
-                showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
+            synchronized (hold) {
+                if (hold.getStatus() == HoldStatus.ACTIVE && hold.isExpired()) {
+                    hold.setStatus(HoldStatus.EXPIRED);
+                    showService.releaseSeats(hold.getShow().getId(), hold.getSeats());
+                }
             }
         });
     }

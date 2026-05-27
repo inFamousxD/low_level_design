@@ -10,11 +10,11 @@ public class Main {
 
     public static void main(String[] args) throws InterruptedException {
 
-        // ── Bootstrap services ────────────────────────────────────────────────
-        ShowService    showService    = new ShowService();
-        TheaterService theaterService = new TheaterService();
-        MovieService   movieService   = new MovieService(showService);
-        BookingService bookingService = new BookingService(showService);
+        // ── Bootstrap services (singletons) ──────────────────────────────────
+        ShowService    showService    = ShowService.getInstance();
+        TheaterService theaterService = TheaterService.getInstance();
+        MovieService   movieService   = MovieService.getInstance();
+        BookingService bookingService = BookingService.getInstance();
 
         // ── Setup: theater, screen, seats ─────────────────────────────────────
         Theater pvr = new Theater("T1", "PVR Cinemas", "Bangalore", "MG Road");
