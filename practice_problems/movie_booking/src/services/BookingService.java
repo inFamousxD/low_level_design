@@ -2,21 +2,19 @@ package services;
 
 import enums.BookingStatus;
 import enums.HoldStatus;
+import factories.BookingFactory;
+import factories.SeatHoldFactory;
 import models.*;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class BookingService {
-
-    private static final Duration HOLD_TTL = Duration.ofMinutes(10);
 
     private final ShowService showService;
     private final Map<String, SeatHold> holds   = new ConcurrentHashMap<>();
@@ -51,13 +49,13 @@ public class BookingService {
      * @throws IllegalStateException if any seat is already held or booked
      */
     public SeatHold holdSeats(String showId, List<String> showSeatIds, User user) {
-        String holdId = "H-" + UUID.randomUUID();
-        Instant expiresAt = Instant.now().plus(HOLD_TTL);
+        String holdId = SeatHoldFactory.generateHoldId();
+        Instant expiresAt = SeatHoldFactory.generateExpiresAt();
 
         // ShowService acquires the per-show lock for atomic seat validation + hold
         List<ShowSeat> held = showService.holdSeats(showId, showSeatIds, holdId, expiresAt);
 
-        SeatHold seatHold = new SeatHold(holdId, user, showService.getShow(showId), held, expiresAt);
+        SeatHold seatHold = SeatHoldFactory.create(holdId, user, showService.getShow(showId), held, expiresAt);
         holds.put(holdId, seatHold);
         return seatHold;
     }
@@ -84,11 +82,8 @@ public class BookingService {
             showService.bookSeats(hold.getShow().getId(), hold.getSeats());
             hold.setStatus(HoldStatus.CONFIRMED);
 
-            double total = hold.getSeats().stream().mapToDouble(ShowSeat::getPrice).sum();
-            String bookingId = "B-" + UUID.randomUUID();
-            Booking booking = new Booking(bookingId, hold.getUser(), hold.getShow(),
-                                           hold.getSeats(), total);
-            bookings.put(bookingId, booking);
+            Booking booking = BookingFactory.fromHold(hold);
+            bookings.put(booking.getId(), booking);
             return booking;
         }
     }

@@ -1,13 +1,12 @@
 package services;
 
-import enums.SeatType;
+import factories.ShowSeatFactory;
 import models.*;
 
 import java.time.LocalDate;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -21,14 +20,6 @@ public class ShowService {
 
     // Per-show lock — prevents concurrent seat-state mutations for the same show
     private final Map<String, ReentrantLock> showLocks = new ConcurrentHashMap<>();
-
-    private final AtomicInteger showSeatIdCounter = new AtomicInteger(1);
-
-    private static final Map<SeatType, Double> PRICE_MULTIPLIER = Map.of(
-            SeatType.REGULAR, 1.0,
-            SeatType.PREMIUM, 1.5,
-            SeatType.VIP,     2.5
-    );
 
     private ShowService() {}
 
@@ -50,10 +41,8 @@ public class ShowService {
 
         Map<String, ShowSeat> seatMap = new ConcurrentHashMap<>();
         for (Seat seat : show.getScreen().getSeats()) {
-            double price = basePrice * PRICE_MULTIPLIER.getOrDefault(seat.getType(), 1.0);
-            String ssId = "SS" + showSeatIdCounter.getAndIncrement();
-            ShowSeat ss = new ShowSeat(ssId, show, seat, price);
-            seatMap.put(ssId, ss);
+            ShowSeat ss = ShowSeatFactory.create(show, seat, basePrice);
+            seatMap.put(ss.getId(), ss);
         }
         showSeats.put(show.getId(), seatMap);
         return show;
